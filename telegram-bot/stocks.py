@@ -1,9 +1,4 @@
-"""Market data, charts and PDF report generation.
-
-This is the single source of truth for financial data — both the Telegram
-bot and the Chrome extension call the HTTP API built on top of these
-functions instead of each re-implementing yfinance/matplotlib logic.
-"""
+"""Market data, charts and PDF report generation for the bot."""
 import logging
 import os
 import tempfile
@@ -14,17 +9,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
-import requests
 import yfinance as yf
-from bs4 import BeautifulSoup
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from . import storage
+import storage
 
 logger = logging.getLogger(__name__)
-
-NEWS_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; BotEconomy/1.0)"}
 
 
 def get_stock_data(tickers: list[str] | None = None):
@@ -53,7 +44,7 @@ def get_stock_data(tickers: list[str] | None = None):
 
 
 def get_latest_prices(tickers: list[str] | None = None) -> dict[str, float]:
-    """Last known close price per ticker, used for alert evaluation and quotes."""
+    """Last known close price per ticker, used for alert evaluation."""
     tickers = tickers or storage.get_tickers()
     try:
         data = yf.download(tickers, period="2d", group_by="ticker", auto_adjust=True, progress=False)
@@ -84,32 +75,14 @@ def get_volume_data(tickers: list[str] | None = None):
         return None
 
 
-def get_ticker_news(ticker: str, limit: int = 5) -> list[dict]:
-    """Best-effort scrape of Yahoo Finance's news section for a ticker.
-
-    Yahoo's markup changes without notice, so this always degrades to an
-    empty list instead of raising — callers should treat news as optional.
-    """
-    url = f"https://finance.yahoo.com/quote/{ticker}/"
-    try:
-        resp = requests.get(url, headers=NEWS_HEADERS, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        items = []
-        for link in soup.select("a[href*='/news/']"):
-            title = link.get_text(strip=True)
-            href = link.get("href", "")
-            if not title or not href:
-                continue
-            if href.startswith("/"):
-                href = f"https://finance.yahoo.com{href}"
-            items.append({"title": title, "url": href})
-            if len(items) >= limit:
-                break
-        return items
-    except Exception:
-        logger.warning("Não foi possível obter notícias para %s", ticker, exc_info=True)
-        return []
+def get_volume_summary(tickers: list[str] | None = None) -> dict[str, int]:
+    """Latest trading volume per ticker, ready to format into a message."""
+    tickers = tickers or storage.get_tickers()
+    data = get_volume_data(tickers)
+    if data is None:
+        return {}
+    latest = data.iloc[-1]
+    return {t: int(latest[t]) for t in tickers if t in latest.index and pd.notna(latest[t])}
 
 
 def gerar_grafico_barras(top_positive, top_negative, filename):

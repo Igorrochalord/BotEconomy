@@ -1,13 +1,13 @@
 """Tiny JSON-file persistence for tickers and price alerts.
 
-The project is single-tenant (one Telegram channel + one browser owner),
-so a JSON file is enough and keeps the backend dependency-free of a database.
+The bot is single-tenant (one Telegram channel), so a JSON file is enough
+and keeps it dependency-free of a database.
 """
 import json
 import os
 import threading
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
 DEFAULT_TICKERS = [

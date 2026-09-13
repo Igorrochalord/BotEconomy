@@ -1,4 +1,4 @@
-from app import storage
+import storage
 
 
 def test_add_ticker_success():

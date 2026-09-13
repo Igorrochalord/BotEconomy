@@ -1,2 +1,7 @@
-python-telegram-bot==21.6
-requests==2.32.3
+python-telegram-bot[job-queue]==21.6
+yfinance==1.7.0
+pandas==2.2.2
+matplotlib==3.9.2
+reportlab==4.2.2
+tzdata==2024.1
+python-dotenv==1.0.1

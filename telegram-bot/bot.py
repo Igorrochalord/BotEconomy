@@ -1,15 +1,25 @@
-"""BotEconomy — Telegram front-end.
+"""BotEconomy — standalone Telegram bot.
 
-Thin client over the shared BotEconomy backend API: all market-data
-fetching, chart/PDF generation and ticker/alert state now live in
-`backend/`, so this bot and the Chrome extension never drift apart.
+Self-contained: talks to yfinance/matplotlib/reportlab directly (via
+stocks.py) and keeps its own tickers/alerts state (via storage.py). No
+external backend service required — the browser companion (extension +
+its own backend) lives in a separate repository and does not affect this
+bot.
 """
 import logging
 import os
+import shutil
+from datetime import time as dt_time
+from zoneinfo import ZoneInfo
 
-import requests
+from dotenv import load_dotenv
 from telegram import InputFile, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+import stocks
+import storage
+
+load_dotenv()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -18,12 +28,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-API_BASE_URL = os.getenv("BOTECONOMY_API_URL", "http://localhost:8000")
-API_KEY = os.getenv("BOTECONOMY_API_KEY", "")
-
-
-def _headers():
-    return {"X-API-Key": API_KEY} if API_KEY else {}
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+MORNING_SUMMARY_HOUR = int(os.getenv("MORNING_SUMMARY_HOUR", "6"))
+EVENING_SUMMARY_HOUR = int(os.getenv("EVENING_SUMMARY_HOUR", "20"))
+ALERT_CHECK_MINUTES = int(os.getenv("ALERT_CHECK_MINUTES", "15"))
+TZ = ZoneInfo("America/Sao_Paulo")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,20 +50,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dados(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Obtendo dados financeiros...")
-    resp = requests.get(f"{API_BASE_URL}/api/summary", timeout=30)
-    if resp.status_code != 200:
+    top_positive, top_negative, top_rentaveis = stocks.get_stock_data()
+    if top_positive is None:
         await update.message.reply_text("Não foi possível obter os dados financeiros.")
         return
 
-    data = resp.json()
     message = "📊 *Top 10 Ações em Alta:*\n"
-    for ticker, value in data["top_positive"].items():
+    for ticker, value in top_positive.items():
         message += f"📈 {ticker}: {value:.2f}%\n"
     message += "\n📉 *Top 10 Ações em Queda:*\n"
-    for ticker, value in data["top_negative"].items():
+    for ticker, value in top_negative.items():
         message += f"📉 {ticker}: {value:.2f}%\n"
     message += "\n🏆 *Top 15 Ações Mais Rentáveis:*\n"
-    for ticker, value in data["top_rentaveis"].items():
+    for ticker, value in top_rentaveis.items():
         message += f"🏅 {ticker}: {value:.2f}%\n"
 
     await update.message.reply_text(message, parse_mode="Markdown")
@@ -62,47 +70,48 @@ async def dados(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Obtendo volume de negociação...")
-    resp = requests.get(f"{API_BASE_URL}/api/volume", timeout=30)
-    if resp.status_code != 200:
+    data = stocks.get_volume_summary()
+    if not data:
         await update.message.reply_text("Não foi possível obter o volume de negociação.")
         return
 
     message = "📊 *Volume de Negociação:*\n"
-    for ticker, value in resp.json()["volume"].items():
+    for ticker, value in data.items():
         message += f"📈 {ticker}: {value:,.0f}\n"
     await update.message.reply_text(message, parse_mode="Markdown")
 
 
 async def relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Gerando relatório...")
-    resp = requests.get(f"{API_BASE_URL}/api/report", timeout=120)
-    if resp.status_code != 200:
+    pdf_path = stocks.build_report_pdf()
+    if not pdf_path:
         await update.message.reply_text("Não foi possível gerar o relatório.")
         return
-    await update.message.reply_document(document=InputFile(resp.content, filename="relatorio_financeiro.pdf"))
+    try:
+        with open(pdf_path, "rb") as f:
+            await update.message.reply_document(document=InputFile(f, filename="relatorio_financeiro.pdf"))
+    finally:
+        shutil.rmtree(os.path.dirname(pdf_path), ignore_errors=True)
 
 
 async def addticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Uso correto: /addticker <TICKER>")
         return
-    resp = requests.post(
-        f"{API_BASE_URL}/api/tickers", json={"ticker": context.args[0]}, headers=_headers(), timeout=15
-    )
-    await update.message.reply_text(resp.json().get("message", resp.json().get("detail", "Erro.")))
+    _, message = storage.add_ticker(context.args[0])
+    await update.message.reply_text(message)
 
 
 async def removeticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Uso correto: /removeticker <TICKER>")
         return
-    resp = requests.delete(f"{API_BASE_URL}/api/tickers/{context.args[0]}", headers=_headers(), timeout=15)
-    await update.message.reply_text(resp.json().get("message", resp.json().get("detail", "Erro.")))
+    _, message = storage.remove_ticker(context.args[0])
+    await update.message.reply_text(message)
 
 
 async def listtickers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    resp = requests.get(f"{API_BASE_URL}/api/tickers", timeout=15)
-    tickers = resp.json().get("tickers", [])
+    tickers = storage.get_tickers()
     await update.message.reply_text(f"Ações monitoradas: {', '.join(tickers)}")
 
 
@@ -118,16 +127,50 @@ async def alerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Preço inválido.")
         return
 
-    resp = requests.post(
-        f"{API_BASE_URL}/api/alerts",
-        json={"ticker": ticker, "condition": condition, "price": price},
-        headers=_headers(),
-        timeout=15,
-    )
-    if resp.status_code == 200:
-        await update.message.reply_text(f"🔔 Alerta criado: {ticker.upper()} {direction} de {price:.2f}")
-    else:
-        await update.message.reply_text(resp.json().get("detail", "Não foi possível criar o alerta."))
+    storage.add_alert(ticker, condition, price)
+    await update.message.reply_text(f"🔔 Alerta criado: {ticker.upper()} {direction} de {price:.2f}")
+
+
+async def send_daily_summary(context: ContextTypes.DEFAULT_TYPE):
+    if not CHAT_ID:
+        return
+    top_positive, top_negative, _ = stocks.get_stock_data()
+    if top_positive is None:
+        return
+    lines = ["📊 *Resumo Diário do Mercado*\n", "📈 *Maiores Altas:*"]
+    for ticker, value in top_positive.items():
+        lines.append(f"  {ticker}: {value:.2f}%")
+    lines.append("\n📉 *Maiores Quedas:*")
+    for ticker, value in top_negative.items():
+        lines.append(f"  {ticker}: {value:.2f}%")
+    await context.bot.send_message(chat_id=CHAT_ID, text="\n".join(lines), parse_mode="Markdown")
+
+
+async def check_alerts(context: ContextTypes.DEFAULT_TYPE):
+    if not CHAT_ID:
+        return
+    alerts = [a for a in storage.get_alerts() if not a["triggered"]]
+    if not alerts:
+        return
+    tickers = list({a["ticker"] for a in alerts})
+    prices = stocks.get_latest_prices(tickers)
+    for alert in alerts:
+        price = prices.get(alert["ticker"])
+        if price is None:
+            continue
+        hit = (
+            (alert["condition"] == "above" and price >= alert["price"])
+            or (alert["condition"] == "below" and price <= alert["price"])
+        )
+        if hit:
+            storage.mark_alert_triggered(alert["id"])
+            arrow = "🔺" if alert["condition"] == "above" else "🔻"
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"{arrow} *Alerta disparado*: {alert['ticker']} atingiu "
+                     f"{price:.2f} (alvo: {alert['condition']} {alert['price']:.2f})",
+                parse_mode="Markdown",
+            )
 
 
 def main():
@@ -140,6 +183,19 @@ def main():
     application.add_handler(CommandHandler("removeticker", removeticker))
     application.add_handler(CommandHandler("listtickers", listtickers))
     application.add_handler(CommandHandler("alerta", alerta))
+
+    if CHAT_ID:
+        job_queue = application.job_queue
+        job_queue.run_daily(send_daily_summary, time=dt_time(hour=MORNING_SUMMARY_HOUR, tzinfo=TZ))
+        job_queue.run_daily(send_daily_summary, time=dt_time(hour=EVENING_SUMMARY_HOUR, tzinfo=TZ))
+        job_queue.run_repeating(check_alerts, interval=ALERT_CHECK_MINUTES * 60, first=60)
+        logger.info(
+            "Resumos diários agendados (%sh/%sh) e checagem de alertas a cada %smin",
+            MORNING_SUMMARY_HOUR, EVENING_SUMMARY_HOUR, ALERT_CHECK_MINUTES,
+        )
+    else:
+        logger.info("TELEGRAM_CHAT_ID não configurado — resumo diário e alertas por push desativados.")
+
     application.run_polling()
 
 
