@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+yfinance==1.7.0
+pandas==2.2.2
+matplotlib==3.9.2
+reportlab==4.2.2
+beautifulsoup4==4.12.3
+requests==2.32.3
+APScheduler==3.10.4
+pydantic==2.9.2
+python-dotenv==1.0.1
