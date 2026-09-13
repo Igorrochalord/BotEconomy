@@ -1,0 +1,19 @@
+# Original project, cloned for reference only — not part of this codebase
+/BotEconomy/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Backend runtime state
+backend/data/state.json
+
+# Env files
+.env
+
+# Editors / OS
+.DS_Store

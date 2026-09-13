@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (lint + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        working-directory: backend
+        run: ruff check app tests
+
+      - name: Test (pytest)
+        working-directory: backend
+        run: pytest -v
+
+  telegram-bot:
+    name: Telegram bot (lint + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: telegram-bot/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: telegram-bot
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        working-directory: telegram-bot
+        run: ruff check bot.py tests
+
+      - name: Test (pytest)
+        working-directory: telegram-bot
+        run: pytest -v
+
+  extension:
+    name: Extension (manifest + JS syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate manifest.json
+        run: python3 -c "import json; json.load(open('extension/manifest.json')); print('manifest.json is valid JSON')"
+
+      - name: Check JS syntax
+        run: |
+          for f in extension/*.js; do
+            echo "Checking $f"
+            node --check "$f"
+          done
+
+  docker-build:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t boteconomy-backend:ci ./backend
+
+      - name: Build telegram-bot image
+        run: docker build -t boteconomy-telegram-bot:ci ./telegram-bot

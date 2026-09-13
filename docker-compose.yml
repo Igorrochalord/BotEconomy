@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - backend_data:/app/data
+    restart: unless-stopped
+
+  telegram-bot:
+    build: ./telegram-bot
+    env_file:
+      - ./backend/.env
+    environment:
+      # Inside the compose network the backend is reachable by service name,
+      # not localhost — overrides whatever BOTECONOMY_API_URL is in .env.
+      - BOTECONOMY_API_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  backend_data:
